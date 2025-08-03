@@ -1,0 +1,316 @@
+/* Custom styles for Tim Warner's Teaching Robot Fleet */
+/* Colorblind-friendly color palette */
+
+:root {
+    --primary-color: #0d6efd;
+    --secondary-color: #6c757d;
+    --success-color: #0066cc;     /* Blue instead of green for active/success */
+    --warning-color: #ff9500;     /* Orange for maintenance/warning */
+    --danger-color: #d93025;      /* Red for offline/danger */
+    --info-color: #7b68ee;       /* Purple for info */
+    --active-color: #0066cc;     /* Blue for active status */
+    --maintenance-color: #ff9500; /* Orange for maintenance */
+    --offline-color: #d93025;    /* Red for offline */
+    --text-dark: #212529;
+    --text-light: #ffffff;
+    --border-color: #dee2e6;
+    --bg-light: #f8f9fa;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f8f9fa;
+}
+
+.navbar-brand {
+    font-weight: 600;
+    font-size: 1.5rem;
+}
+
+.navbar-brand i {
+    font-size: 1.8rem;
+    margin-right: 0.5rem;
+}
+
+.dashboard-icon {
+    position: absolute;
+    right: 15px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 2rem;
+    opacity: 0.3;
+}
+
+.card {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+    border: 1px solid rgba(0, 0, 0, 0.125);
+    transition: box-shadow 0.15s ease-in-out;
+}
+
+.card:hover {
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+}
+
+.progress {
+    height: 1.25rem;
+}
+
+.btn-group-sm > .btn {
+    margin-right: 2px;
+}
+
+.table th {
+    border-top: none;
+    font-weight: 600;
+}
+
+.modal-header {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.modal-header .btn-close {
+    filter: invert(1);
+}
+
+.alert {
+    border: none;
+    box-shadow: 0 0.25rem 0.5rem rgba(0, 0, 0, 0.1);
+}
+
+footer {
+    margin-top: auto;
+}
+
+/* Status indicators with colorblind-friendly approach */
+.status-badge {
+    font-weight: 600;
+    border: 2px solid transparent;
+    position: relative;
+}
+
+.status-badge::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+}
+
+.status-active {
+    background-color: var(--active-color) !important;
+    color: var(--text-light) !important;
+    border-color: var(--active-color) !important;
+}
+
+.status-active::before {
+    content: '●';
+    color: var(--text-light);
+    font-weight: bold;
+}
+
+.status-maintenance {
+    background-color: var(--maintenance-color) !important;
+    color: var(--text-dark) !important;
+    border-color: var(--maintenance-color) !important;
+}
+
+.status-maintenance::before {
+    content: '▲';
+    color: var(--text-dark);
+    font-weight: bold;
+}
+
+.status-offline {
+    background-color: var(--offline-color) !important;
+    color: var(--text-light) !important;
+    border-color: var(--offline-color) !important;
+}
+
+.status-offline::before {
+    content: '■';
+    color: var(--text-light);
+    font-weight: bold;
+}
+
+/* Battery level indicators with patterns */
+.battery-high {
+    background-color: var(--active-color) !important;
+    background-image: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 2px,
+        rgba(255,255,255,0.1) 2px,
+        rgba(255,255,255,0.1) 4px
+    );
+}
+
+.battery-medium {
+    background-color: var(--maintenance-color) !important;
+    background-image: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 3px,
+        rgba(255,255,255,0.2) 3px,
+        rgba(255,255,255,0.2) 6px
+    );
+}
+
+.battery-low {
+    background-color: var(--offline-color) !important;
+    background-image: repeating-linear-gradient(
+        90deg,
+        transparent,
+        transparent 4px,
+        rgba(255,255,255,0.3) 4px,
+        rgba(255,255,255,0.3) 8px
+    );
+}
+
+.battery-critical {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+    100% {
+        opacity: 1;
+    }
+}
+
+.robot-card {
+    transition: transform 0.2s ease-in-out;
+}
+
+.robot-card:hover {
+    transform: translateY(-2px);
+}
+
+.nav-link.active {
+    font-weight: 600;
+}
+
+@media (max-width: 768px) {
+    .dashboard-icon {
+        display: none;
+    }
+    
+    .card-body h2 {
+        font-size: 1.5rem;
+    }
+}
+
+/* Custom loading spinner */
+.loading-spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid var(--primary-color);
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 20px auto;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Dashboard cards with colorblind-friendly styling */
+.card-active {
+    background: linear-gradient(135deg, var(--active-color), #004499) !important;
+    border-left: 6px solid #003366;
+}
+
+.card-maintenance {
+    background: linear-gradient(135deg, var(--maintenance-color), #cc7700) !important;
+    border-left: 6px solid #994400;
+}
+
+.card-offline {
+    background: linear-gradient(135deg, var(--offline-color), #aa1f1a) !important;
+    border-left: 6px solid #771511;
+}
+
+.card-total {
+    background: linear-gradient(135deg, var(--primary-color), #0a58ca) !important;
+    border-left: 6px solid #084298;
+}
+
+/* Health status indicators with symbols */
+.health-indicator {
+    display: inline-flex;
+    align-items: center;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.875rem;
+}
+
+.health-indicator::before {
+    margin-right: 6px;
+    font-weight: bold;
+}
+
+.health-healthy {
+    background-color: var(--active-color);
+    color: var(--text-light);
+}
+
+.health-healthy::before {
+    content: '✓';
+}
+
+.health-degraded {
+    background-color: var(--maintenance-color);
+    color: var(--text-dark);
+}
+
+.health-degraded::before {
+    content: '⚠';
+}
+
+.health-unhealthy {
+    background-color: var(--offline-color);
+    color: var(--text-light);
+}
+
+.health-unhealthy::before {
+    content: '✗';
+}
+
+/* Accessibility improvements */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.focus-visible {
+    outline: 3px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+/* High contrast patterns for additional accessibility */
+@media (prefers-contrast: high) {
+    .status-badge {
+        border-width: 3px;
+        font-weight: 700;
+    }
+    
+    .progress-bar {
+        border: 2px solid var(--text-dark);
+    }
+}

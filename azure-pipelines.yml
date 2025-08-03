@@ -1,0 +1,225 @@
+# Azure DevOps Pipeline for Tim Warner's Teaching Robot Fleet
+# AZ-400 Demo Application
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - az400-demo-app/*
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - az400-demo-app/*
+
+variables:
+  # Azure service connection names (configure in Azure DevOps)
+  azureServiceConnection: 'AzureServiceConnection'
+  webAppName: 'tim-warner-robot-fleet'
+  
+  # Node.js version
+  nodeVersion: '18.x'
+  
+  # Working directory
+  workingDirectory: 'az400-demo-app'
+
+stages:
+- stage: Test
+  displayName: 'Test Stage'
+  jobs:
+  - job: RunTests
+    displayName: 'Run Tests'
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: robotfleet_test
+        ports:
+          5432:5432
+    
+    steps:
+    - checkout: self
+      displayName: 'Checkout code'
+    
+    - task: NodeTool@0
+      displayName: 'Install Node.js'
+      inputs:
+        versionSpec: $(nodeVersion)
+    
+    - script: |
+        cd $(workingDirectory)
+        npm ci
+      displayName: 'Install dependencies'
+    
+    - script: |
+        cd $(workingDirectory)
+        npm run lint
+      displayName: 'Run ESLint'
+    
+    - script: |
+        cd $(workingDirectory)
+        npm run typecheck
+      displayName: 'Run TypeScript check'
+    
+    - script: |
+        cd $(workingDirectory)
+        npm test
+      displayName: 'Run tests'
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: robotfleet_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+    
+    - task: PublishTestResults@2
+      displayName: 'Publish test results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(workingDirectory)/test-results.xml'
+        failTaskOnFailedTests: true
+      condition: always()
+
+- stage: Build
+  displayName: 'Build Stage'
+  dependsOn: Test
+  condition: succeeded()
+  jobs:
+  - job: BuildApp
+    displayName: 'Build Application'
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    steps:
+    - checkout: self
+      displayName: 'Checkout code'
+    
+    - task: NodeTool@0
+      displayName: 'Install Node.js'
+      inputs:
+        versionSpec: $(nodeVersion)
+    
+    - script: |
+        cd $(workingDirectory)
+        npm ci --only=production
+      displayName: 'Install production dependencies'
+    
+    - task: ArchiveFiles@2
+      displayName: 'Create deployment package'
+      inputs:
+        rootFolderOrFile: '$(workingDirectory)'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+        replaceExistingArchive: true
+    
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish artifacts'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+
+- stage: DeployStaging
+  displayName: 'Deploy to Staging'
+  dependsOn: Build
+  condition: and(succeeded(), or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.SourceBranch'], 'refs/heads/develop')))
+  jobs:
+  - deployment: DeployToStaging
+    displayName: 'Deploy to Staging Slot'
+    pool:
+      vmImage: 'ubuntu-latest'
+    environment: 'staging'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure Web App (Staging)'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              appType: 'webAppLinux'
+              appName: $(webAppName)
+              slotName: 'staging'
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              runtimeStack: 'NODE|18-lts'
+              appSettings: |
+                -NODE_ENV staging
+                -APP_NAME "Tim Warner's Teaching Robot Fleet (Staging)"
+                -WEBSITE_NODE_DEFAULT_VERSION 18.x
+
+- stage: DeployProduction
+  displayName: 'Deploy to Production'
+  dependsOn: DeployStaging
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployToProduction
+    displayName: 'Deploy to Production'
+    pool:
+      vmImage: 'ubuntu-latest'
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure Web App (Production)'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              appType: 'webAppLinux'
+              appName: $(webAppName)
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              runtimeStack: 'NODE|18-lts'
+              appSettings: |
+                -NODE_ENV production
+                -APP_NAME "Tim Warner's Teaching Robot Fleet"
+                -WEBSITE_NODE_DEFAULT_VERSION 18.x
+
+- stage: PostDeployment
+  displayName: 'Post-Deployment Validation'
+  dependsOn: DeployProduction
+  condition: succeeded()
+  jobs:
+  - job: HealthCheck
+    displayName: 'Health Check'
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    steps:
+    - script: |
+        echo "Waiting for application to start..."
+        sleep 30
+        
+        echo "Checking application health..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" https://$(webAppName).azurewebsites.net/api/health)
+        
+        if [ $response -eq 200 ]; then
+          echo "✅ Health check passed - Application is running correctly"
+        else
+          echo "❌ Health check failed with HTTP status: $response"
+          exit 1
+        fi
+      displayName: 'Application Health Check'
+    
+    - script: |
+        echo "Running smoke tests..."
+        response=$(curl -s -o /dev/null -w "%{http_code}" https://$(webAppName).azurewebsites.net/api/robots)
+        
+        if [ $response -eq 200 ]; then
+          echo "✅ API smoke test passed"
+        else
+          echo "❌ API smoke test failed with HTTP status: $response"
+          exit 1
+        fi
+      displayName: 'API Smoke Test'

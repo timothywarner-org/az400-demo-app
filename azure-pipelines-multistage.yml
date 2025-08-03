@@ -1,0 +1,407 @@
+# Azure DevOps Multi-Stage Pipeline with Environments
+# Tim Warner's Teaching Robot Fleet - AZ-400 Demo
+# Demonstrates modern YAML pipelines with environments, approvals, and gates
+
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - az400-demo-app/*
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - az400-demo-app/*
+
+variables:
+  # Azure service connection and app settings
+  azureServiceConnection: 'AzureServiceConnection'
+  webAppName: 'tim-warner-robot-fleet'
+  resourceGroupName: 'rg-robot-fleet'
+  
+  # Build configuration
+  nodeVersion: '18.x'
+  workingDirectory: 'az400-demo-app'
+  artifactName: 'robot-fleet-app'
+
+stages:
+#==============================================================================
+# BUILD STAGE
+#==============================================================================
+- stage: Build
+  displayName: '🔨 Build & Test'
+  jobs:
+  - job: BuildTest
+    displayName: 'Build, Test, and Package'
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: robotfleet_test
+        ports:
+          5432:5432
+    
+    steps:
+    - checkout: self
+      displayName: 'Checkout source code'
+    
+    - task: NodeTool@0
+      displayName: 'Install Node.js $(nodeVersion)'
+      inputs:
+        versionSpec: $(nodeVersion)
+    
+    - script: |
+        cd $(workingDirectory)
+        npm ci
+      displayName: 'Install dependencies'
+    
+    - script: |
+        cd $(workingDirectory)
+        npm run lint
+      displayName: 'Run ESLint'
+    
+    - script: |
+        cd $(workingDirectory)
+        npm run typecheck
+      displayName: 'Run TypeScript check'
+    
+    - script: |
+        cd $(workingDirectory)
+        npm test -- --ci --coverage --watchAll=false
+      displayName: 'Run tests with coverage'
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: robotfleet_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+    
+    - task: PublishTestResults@2
+      displayName: 'Publish test results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(workingDirectory)/test-results.xml'
+        failTaskOnFailedTests: true
+      condition: always()
+    
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish code coverage'
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: '$(workingDirectory)/coverage/cobertura-coverage.xml'
+        reportDirectory: '$(workingDirectory)/coverage'
+      condition: always()
+    
+    - script: |
+        cd $(workingDirectory)
+        npm ci --only=production
+      displayName: 'Install production dependencies'
+    
+    - task: ArchiveFiles@2
+      displayName: 'Create deployment package'
+      inputs:
+        rootFolderOrFile: '$(workingDirectory)'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/$(artifactName).zip'
+        replaceExistingArchive: true
+    
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish artifacts'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+
+#==============================================================================
+# INFRASTRUCTURE STAGE
+#==============================================================================
+- stage: Infrastructure
+  displayName: '🏗️ Infrastructure'
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployInfrastructure
+    displayName: 'Deploy Azure Infrastructure'
+    environment: 'infrastructure'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+          
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy ARM Template'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: $(azureServiceConnection)
+              subscriptionId: '$(subscriptionId)'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: $(resourceGroupName)
+              location: 'East US'
+              templateLocation: 'Linked artifact'
+              csmFile: '$(Pipeline.Workspace)/drop/.azure/azuredeploy.json'
+              csmParametersFile: '$(Pipeline.Workspace)/drop/.azure/azuredeploy.parameters.json'
+              overrideParameters: '-appName $(webAppName)'
+              deploymentMode: 'Incremental'
+              deploymentName: 'robot-fleet-infrastructure-$(Build.BuildNumber)'
+
+#==============================================================================
+# DEVELOPMENT STAGE
+#==============================================================================
+- stage: Development
+  displayName: '🚀 Development Environment'
+  dependsOn: 
+    - Build
+    - Infrastructure
+  condition: and(succeeded(), in(variables['Build.SourceBranch'], 'refs/heads/develop', 'refs/heads/main'))
+  jobs:
+  - deployment: DeployToDevelopment
+    displayName: 'Deploy to Development'
+    environment: 'development'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure Web App (Development)'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              appType: 'webAppLinux'
+              appName: '$(webAppName)-dev'
+              package: '$(Pipeline.Workspace)/drop/$(artifactName).zip'
+              runtimeStack: 'NODE|18-lts'
+              appSettings: |
+                -NODE_ENV development
+                -APP_NAME "Tim Warner's Teaching Robot Fleet (Development)"
+                -WEBSITE_NODE_DEFAULT_VERSION 18.x
+                -LOG_LEVEL info
+          
+          - task: AzureAppServiceManage@0
+            displayName: 'Restart App Service'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              WebAppName: '$(webAppName)-dev'
+              Action: 'Restart'
+
+#==============================================================================
+# STAGING STAGE
+#==============================================================================
+- stage: Staging
+  displayName: '🎭 Staging Environment'
+  dependsOn: Development
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployToStaging
+    displayName: 'Deploy to Staging Slot'
+    environment: 'staging'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Staging Slot'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              appType: 'webAppLinux'
+              appName: $(webAppName)
+              slotName: 'staging'
+              package: '$(Pipeline.Workspace)/drop/$(artifactName).zip'
+              runtimeStack: 'NODE|18-lts'
+              appSettings: |
+                -NODE_ENV staging
+                -APP_NAME "Tim Warner's Teaching Robot Fleet (Staging)"
+                -WEBSITE_NODE_DEFAULT_VERSION 18.x
+                -LOG_LEVEL warn
+          
+          - task: delay@1
+            displayName: 'Wait for application startup'
+            inputs:
+              delayForMinutes: '1'
+          
+          - task: AzureCLI@2
+            displayName: 'Run staging smoke tests'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Running smoke tests against staging slot..."
+                
+                # Test health endpoint
+                health_response=$(curl -s -o /dev/null -w "%{http_code}" https://$(webAppName)-staging.azurewebsites.net/api/health)
+                if [ $health_response -eq 200 ]; then
+                  echo "✅ Health check passed"
+                else
+                  echo "❌ Health check failed with status $health_response"
+                  exit 1
+                fi
+                
+                # Test API endpoint
+                api_response=$(curl -s -o /dev/null -w "%{http_code}" https://$(webAppName)-staging.azurewebsites.net/api/robots)
+                if [ $api_response -eq 200 ]; then
+                  echo "✅ API smoke test passed"
+                else
+                  echo "❌ API smoke test failed with status $api_response"
+                  exit 1
+                fi
+                
+                echo "🎉 All staging tests passed!"
+
+#==============================================================================
+# PRODUCTION STAGE
+#==============================================================================
+- stage: Production
+  displayName: '🌐 Production Environment'
+  dependsOn: Staging
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployToProduction
+    displayName: 'Deploy to Production'
+    environment: 'production'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureAppServiceManage@0
+            displayName: 'Stop production slot'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              WebAppName: $(webAppName)
+              Action: 'Stop'
+            continueOnError: true
+          
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Production'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              appType: 'webAppLinux'
+              appName: $(webAppName)
+              package: '$(Pipeline.Workspace)/drop/$(artifactName).zip'
+              runtimeStack: 'NODE|18-lts'
+              appSettings: |
+                -NODE_ENV production
+                -APP_NAME "Tim Warner's Teaching Robot Fleet"
+                -WEBSITE_NODE_DEFAULT_VERSION 18.x
+                -LOG_LEVEL error
+          
+          - task: AzureAppServiceManage@0
+            displayName: 'Start production app'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              WebAppName: $(webAppName)
+              Action: 'Start'
+          
+          - task: delay@1
+            displayName: 'Wait for production startup'
+            inputs:
+              delayForMinutes: '2'
+
+#==============================================================================
+# POST-DEPLOYMENT VALIDATION
+#==============================================================================
+- stage: PostDeployment
+  displayName: '✅ Post-Deployment Validation'
+  dependsOn: Production
+  condition: succeeded()
+  jobs:
+  - job: ValidationTests
+    displayName: 'Production Validation'
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Production health checks'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "🔍 Running production validation tests..."
+          
+          # Wait for app to fully start
+          echo "Waiting for application to fully initialize..."
+          sleep 30
+          
+          # Test main health endpoint
+          echo "Testing health endpoint..."
+          health_response=$(curl -s -o /dev/null -w "%{http_code}" https://$(webAppName).azurewebsites.net/api/health)
+          if [ $health_response -eq 200 ]; then
+            echo "✅ Health check passed"
+          else
+            echo "❌ Health check failed with status $health_response"
+            exit 1
+          fi
+          
+          # Test detailed health endpoint
+          echo "Testing detailed health endpoint..."
+          detailed_health=$(curl -s https://$(webAppName).azurewebsites.net/api/health/detailed)
+          echo "Health status: $detailed_health"
+          
+          # Test API endpoints
+          echo "Testing API endpoints..."
+          api_response=$(curl -s -o /dev/null -w "%{http_code}" https://$(webAppName).azurewebsites.net/api/robots)
+          if [ $api_response -eq 200 ]; then
+            echo "✅ API endpoint test passed"
+          else
+            echo "❌ API endpoint test failed with status $api_response"
+            exit 1
+          fi
+          
+          # Test web interface
+          echo "Testing web interface..."
+          web_response=$(curl -s -o /dev/null -w "%{http_code}" https://$(webAppName).azurewebsites.net/)
+          if [ $web_response -eq 200 ]; then
+            echo "✅ Web interface test passed"
+          else
+            echo "❌ Web interface test failed with status $web_response"
+            exit 1
+          fi
+          
+          echo "🎉 All production validation tests passed!"
+          echo "🌐 Application is live at: https://$(webAppName).azurewebsites.net"
+    
+    - task: InvokeRESTAPI@1
+      displayName: 'Notify Teams (Optional)'
+      inputs:
+        connectionType: 'connectedServiceName'
+        serviceConnection: 'TeamsWebhook'
+        method: 'POST'
+        body: |
+          {
+            "text": "🚀 Tim Warner's Robot Fleet has been successfully deployed to production!",
+            "sections": [
+              {
+                "activityTitle": "Deployment Successful",
+                "activitySubtitle": "Build $(Build.BuildNumber)",
+                "facts": [
+                  {"name": "Environment", "value": "Production"},
+                  {"name": "Version", "value": "$(Build.BuildNumber)"},
+                  {"name": "URL", "value": "https://$(webAppName).azurewebsites.net"}
+                ]
+              }
+            ]
+          }
+      continueOnError: true

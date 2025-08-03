@@ -1,0 +1,201 @@
+# Azure DevOps Build-Only Pipeline
+# Tim Warner's Teaching Robot Fleet - AZ-400 Demo
+# Use this with Classic Release Pipelines to demonstrate traditional CI/CD separation
+
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - feature/*
+  paths:
+    include:
+      - az400-demo-app/*
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - az400-demo-app/*
+
+variables:
+  # Build configuration
+  nodeVersion: '18.x'
+  workingDirectory: 'az400-demo-app'
+  buildConfiguration: 'Release'
+  
+  # Artifact settings
+  artifactName: 'robot-fleet-app'
+  
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Build
+  displayName: 'Build and Test'
+  jobs:
+  - job: BuildTest
+    displayName: 'Build, Test, and Package'
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: robotfleet_test
+        ports:
+          5432:5432
+    
+    steps:
+    - checkout: self
+      displayName: 'Checkout source code'
+      fetchDepth: 1
+    
+    - task: NodeTool@0
+      displayName: 'Install Node.js $(nodeVersion)'
+      inputs:
+        versionSpec: $(nodeVersion)
+    
+    - task: Cache@2
+      displayName: 'Cache npm dependencies'
+      inputs:
+        key: 'npm | "$(Agent.OS)" | $(workingDirectory)/package-lock.json'
+        restoreKeys: |
+          npm | "$(Agent.OS)"
+        path: $(workingDirectory)/node_modules
+    
+    - script: |
+        cd $(workingDirectory)
+        npm ci
+      displayName: 'Install dependencies'
+    
+    - script: |
+        cd $(workingDirectory)
+        npm run lint
+      displayName: 'Run ESLint'
+      continueOnError: false
+    
+    - script: |
+        cd $(workingDirectory)
+        npm run typecheck
+      displayName: 'Run TypeScript check'
+      continueOnError: false
+    
+    - script: |
+        cd $(workingDirectory)
+        npm test -- --ci --coverage --watchAll=false
+      displayName: 'Run tests with coverage'
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: robotfleet_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+    
+    - task: PublishTestResults@2
+      displayName: 'Publish test results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(workingDirectory)/test-results.xml'
+        searchFolder: '$(System.DefaultWorkingDirectory)'
+        failTaskOnFailedTests: true
+        testRunTitle: 'Robot Fleet Tests'
+      condition: always()
+    
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish code coverage'
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: '$(workingDirectory)/coverage/cobertura-coverage.xml'
+        reportDirectory: '$(workingDirectory)/coverage'
+        failIfCoverageEmpty: false
+      condition: always()
+    
+    - script: |
+        cd $(workingDirectory)
+        npm run build
+      displayName: 'Run build script'
+    
+    - task: DeleteFiles@1
+      displayName: 'Clean up development files'
+      inputs:
+        SourceFolder: '$(workingDirectory)'
+        Contents: |
+          node_modules/**
+          src/**/*.test.js
+          src/**/__tests__/**
+          coverage/**
+          *.log
+          .env.test
+    
+    - script: |
+        cd $(workingDirectory)
+        npm ci --only=production
+      displayName: 'Install production dependencies'
+    
+    - task: ArchiveFiles@2
+      displayName: 'Create deployment package'
+      inputs:
+        rootFolderOrFile: '$(workingDirectory)'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/$(artifactName)-$(Build.BuildNumber).zip'
+        replaceExistingArchive: true
+        verbose: true
+    
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish build artifacts'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: '$(artifactName)'
+        publishLocation: 'Container'
+    
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish ARM templates'
+      inputs:
+        PathtoPublish: '$(workingDirectory)/.azure'
+        ArtifactName: 'infrastructure'
+        publishLocation: 'Container'
+    
+    # Security scanning (optional - requires appropriate extensions)
+    - task: SonarCloudPrepare@1
+      displayName: 'Prepare SonarCloud analysis'
+      inputs:
+        SonarCloud: 'SonarCloud'
+        organization: 'your-org'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: 'tim-warner-robot-fleet'
+        cliProjectName: 'Tim Warner Robot Fleet'
+        cliSources: '$(workingDirectory)/src'
+      condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+      continueOnError: true
+    
+    - task: SonarCloudAnalyze@1
+      displayName: 'Run SonarCloud analysis'
+      condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+      continueOnError: true
+    
+    - task: SonarCloudPublish@1
+      displayName: 'Publish SonarCloud results'
+      inputs:
+        pollingTimeoutSec: '300'
+      condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+      continueOnError: true
+    
+    # Build summary
+    - script: |
+        echo "=== Build Summary ==="
+        echo "Build Number: $(Build.BuildNumber)"
+        echo "Source Branch: $(Build.SourceBranchName)"
+        echo "Commit: $(Build.SourceVersion)"
+        echo "Triggered by: $(Build.Reason)"
+        echo "Artifact: $(artifactName)-$(Build.BuildNumber).zip"
+        echo "Build completed successfully!"
+      displayName: 'Build summary'
+      condition: succeeded()

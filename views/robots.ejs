@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= title %> | <%= appName %></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-robot"></i> <%= appName %>
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Dashboard</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/robots">Robots</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/maintenance">Maintenance</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/api/health/detailed" target="_blank">
+                            <i class="bi bi-heart-pulse"></i> Health
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container my-4">
+
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Robot Fleet Management</h1>
+            <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addRobotModal">
+                <i class="bi bi-plus-circle"></i> Add New Robot
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <div class="mb-3">
+                    <input type="text" class="form-control" id="searchInput" placeholder="Search robots...">
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover" id="robotsTable">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>Model</th>
+                                <th>Status</th>
+                                <th>Battery</th>
+                                <th>Location</th>
+                                <th>Current Task</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="robotsTableBody">
+                            <tr>
+                                <td colspan="8" class="text-center">Loading robots...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Robot Modal -->
+<div class="modal fade" id="addRobotModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Add New Robot</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="addRobotForm">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Robot Name</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Model</label>
+                        <select class="form-select" name="model" required>
+                            <option value="">Select Model</option>
+                            <option value="EDU-3000">EDU-3000 (Advanced)</option>
+                            <option value="EDU-2500">EDU-2500 (Standard)</option>
+                            <option value="EDU-2000">EDU-2000 (Basic)</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Status</label>
+                        <select class="form-select" name="status" required>
+                            <option value="Active">Active</option>
+                            <option value="Maintenance">Maintenance</option>
+                            <option value="Offline">Offline</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Location</label>
+                        <input type="text" class="form-control" name="location">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Battery Level</label>
+                        <input type="number" class="form-control" name="battery_level" min="0" max="100" value="100">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Assigned Task</label>
+                        <input type="text" class="form-control" name="assigned_task">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Robot</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadRobots();
+    
+    // Search functionality
+    document.getElementById('searchInput').addEventListener('keyup', function(e) {
+        const searchTerm = e.target.value.toLowerCase();
+        const rows = document.querySelectorAll('#robotsTableBody tr');
+        
+        rows.forEach(row => {
+            const text = row.textContent.toLowerCase();
+            row.style.display = text.includes(searchTerm) ? '' : 'none';
+        });
+    });
+    
+    // Add robot form
+    document.getElementById('addRobotForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const data = Object.fromEntries(formData);
+        
+        fetch('/api/robots', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('addRobotModal'));
+                modal.hide();
+                e.target.reset();
+                loadRobots();
+                showAlert('Robot added successfully!', 'success');
+            } else {
+                showAlert(result.error || 'Failed to add robot', 'danger');
+            }
+        })
+        .catch(error => {
+            showAlert('Error adding robot', 'danger');
+            console.error('Error:', error);
+        });
+    });
+});
+
+function loadRobots() {
+    fetch('/api/robots')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                displayRobots(data.data);
+            }
+        })
+        .catch(error => console.error('Error loading robots:', error));
+}
+
+function displayRobots(robots) {
+    const tbody = document.getElementById('robotsTableBody');
+    
+    if (robots.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No robots found</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = robots.map(robot => `
+        <tr>
+            <td>${robot.id}</td>
+            <td><strong>${escapeHtml(robot.name)}</strong></td>
+            <td>${escapeHtml(robot.model)}</td>
+            <td>
+                <span class="${getStatusBadgeClass(robot.status)}" aria-label="Status: ${robot.status}">
+                    ${getStatusIcon(robot.status)}${robot.status}
+                </span>
+            </td>
+            <td>
+                <div class="progress position-relative" style="width: 120px; height: 24px;" 
+                     aria-label="Battery level: ${robot.battery_level || 0}%">
+                    <div class="progress-bar ${getBatteryProgressClass(robot.battery_level)}" 
+                         style="width: ${robot.battery_level || 0}%"
+                         role="progressbar" 
+                         aria-valuenow="${robot.battery_level || 0}" 
+                         aria-valuemin="0" 
+                         aria-valuemax="100">
+                    </div>
+                    <span class="position-absolute w-100 text-center text-dark fw-bold" 
+                          style="line-height: 24px; font-size: 0.75rem;">
+                        ${getBatteryIcon(robot.battery_level)} ${robot.battery_level || 0}%
+                    </span>
+                </div>
+            </td>
+            <td>${escapeHtml(robot.location || 'Unknown')}</td>
+            <td>${escapeHtml(robot.assigned_task || 'None')}</td>
+            <td>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Robot actions">
+                    <a href="/robot/${robot.id}" 
+                       class="btn btn-primary"
+                       aria-label="View details for ${robot.name}">
+                        <i class="bi bi-eye"></i>
+                    </a>
+                    <button class="btn btn-danger" 
+                            onclick="deleteRobot(${robot.id})"
+                            aria-label="Delete ${robot.name}">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function deleteRobot(id) {
+    if (confirm('Are you sure you want to delete this robot?')) {
+        fetch(`/api/robots/${id}`, {
+            method: 'DELETE'
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                loadRobots();
+                showAlert('Robot deleted successfully!', 'success');
+            }
+        })
+        .catch(error => console.error('Error:', error));
+    }
+}
+
+// Utility functions are now defined in app.js
+
+function showAlert(message, type) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3`;
+    alertDiv.style.zIndex = '1050';
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    document.body.appendChild(alertDiv);
+    
+    setTimeout(() => alertDiv.remove(), 5000);
+}
+</script>
+
+    </main>
+
+    <footer class="bg-light text-center py-3 mt-5">
+        <div class="container">
+            <p class="mb-0">
+                <i class="bi bi-mortarboard"></i> AZ-400 Demo Application | 
+                <i class="bi bi-person-badge"></i> By Tim Warner | 
+                <i class="bi bi-book"></i> O'Reilly Live Learning
+            </p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

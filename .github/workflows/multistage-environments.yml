@@ -1,0 +1,430 @@
+name: Multi-Stage with Environments - Tim Warner's Teaching Robot Fleet
+
+# This workflow demonstrates modern GitOps with environments, approvals, and protection rules
+# Perfect for showing GitHub's environment-based deployment strategies
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'az400-demo-app/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'az400-demo-app/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+      skip_tests:
+        description: 'Skip tests (not recommended for production)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  NODE_VERSION: '18.x'
+  AZURE_WEBAPP_NAME: 'tim-warner-robot-fleet'
+  WORKING_DIRECTORY: './az400-demo-app'
+
+defaults:
+  run:
+    working-directory: ./az400-demo-app
+
+jobs:
+  #============================================================================
+  # BUILD AND TEST JOB
+  #============================================================================
+  build:
+    name: 🔨 Build and Test
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: robotfleet_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    outputs:
+      build-version: ${{ steps.version.outputs.version }}
+      should-deploy-dev: ${{ steps.deploy-conditions.outputs.deploy-dev }}
+      should-deploy-staging: ${{ steps.deploy-conditions.outputs.deploy-staging }}
+      should-deploy-prod: ${{ steps.deploy-conditions.outputs.deploy-prod }}
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🏷️ Generate build version
+      id: version
+      run: |
+        VERSION="$(date +'%Y%m%d')-$(echo ${{ github.sha }} | cut -c1-8)"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "🏷️ Build version: $VERSION"
+    
+    - name: 🎯 Determine deployment targets
+      id: deploy-conditions
+      run: |
+        echo "Determining deployment targets based on branch and inputs..."
+        
+        if [[ "${{ github.ref }}" == "refs/heads/develop" || "${{ github.event.inputs.environment }}" == "development" ]]; then
+          echo "deploy-dev=true" >> $GITHUB_OUTPUT
+          echo "✅ Will deploy to development"
+        fi
+        
+        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.event.inputs.environment }}" == "staging" ]]; then
+          echo "deploy-staging=true" >> $GITHUB_OUTPUT
+          echo "✅ Will deploy to staging"
+        fi
+        
+        if [[ "${{ github.ref }}" == "refs/heads/main" && "${{ github.event_name }}" != "pull_request" ]] || [[ "${{ github.event.inputs.environment }}" == "production" ]]; then
+          echo "deploy-prod=true" >> $GITHUB_OUTPUT
+          echo "✅ Will deploy to production"
+        fi
+    
+    - name: 📦 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: az400-demo-app/package-lock.json
+    
+    - name: 🔧 Install dependencies
+      run: npm ci
+    
+    - name: 🔍 Run linting
+      run: npm run lint
+    
+    - name: 🔎 Type checking
+      run: npm run typecheck
+    
+    - name: 🧪 Run tests
+      if: ${{ !github.event.inputs.skip_tests }}
+      run: npm test -- --ci --coverage --watchAll=false
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: robotfleet_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+    
+    - name: 📊 Upload test results
+      if: always() && !github.event.inputs.skip_tests
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ steps.version.outputs.version }}
+        path: |
+          az400-demo-app/test-results.xml
+          az400-demo-app/coverage/
+    
+    - name: 🏗️ Build application
+      run: npm run build
+    
+    - name: 📦 Prepare deployment package
+      run: |
+        # Clean up development files
+        rm -rf node_modules coverage *.log .env.test
+        
+        # Install production dependencies
+        npm ci --only=production
+        
+        # Create deployment package
+        tar -czf ../deployment-${{ steps.version.outputs.version }}.tar.gz \
+          --exclude='.git*' \
+          --exclude='node_modules/.cache' \
+          .
+    
+    - name: 📤 Upload deployment artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: deployment-${{ steps.version.outputs.version }}
+        path: deployment-${{ steps.version.outputs.version }}.tar.gz
+        retention-days: 30
+
+  #============================================================================
+  # DEVELOPMENT ENVIRONMENT
+  #============================================================================
+  deploy-development:
+    name: 🚀 Deploy to Development
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.outputs.should-deploy-dev == 'true'
+    environment: 
+      name: development
+      url: https://${{ env.AZURE_WEBAPP_NAME }}-dev.azurewebsites.net
+    
+    steps:
+    - name: 📥 Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: deployment-${{ needs.build.outputs.build-version }}
+    
+    - name: 📦 Extract deployment package
+      run: |
+        mkdir -p app
+        tar -xzf deployment-${{ needs.build.outputs.build-version }}.tar.gz -C app
+    
+    - name: 🚀 Deploy to Azure Web App (Development)
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}-dev
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_DEV }}
+        package: ./app
+    
+    - name: ⏳ Wait for deployment
+      run: sleep 30
+    
+    - name: 🧪 Run development smoke tests
+      run: |
+        echo "🧪 Running development environment smoke tests..."
+        
+        # Test health endpoint
+        health_status=$(curl -s -o /dev/null -w "%{http_code}" https://${{ env.AZURE_WEBAPP_NAME }}-dev.azurewebsites.net/api/health)
+        if [ $health_status -eq 200 ]; then
+          echo "✅ Health check passed"
+        else
+          echo "❌ Health check failed with status $health_status"
+          exit 1
+        fi
+        
+        # Test API
+        api_status=$(curl -s -o /dev/null -w "%{http_code}" https://${{ env.AZURE_WEBAPP_NAME }}-dev.azurewebsites.net/api/robots)
+        if [ $api_status -eq 200 ]; then
+          echo "✅ API smoke test passed"
+        else
+          echo "❌ API smoke test failed with status $api_status"
+          exit 1
+        fi
+        
+        echo "🎉 Development deployment successful!"
+
+  #============================================================================
+  # STAGING ENVIRONMENT
+  #============================================================================
+  deploy-staging:
+    name: 🎭 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, deploy-development]
+    if: always() && needs.build.outputs.should-deploy-staging == 'true' && (needs.deploy-development.result == 'success' || needs.deploy-development.result == 'skipped')
+    environment: 
+      name: staging
+      url: https://${{ env.AZURE_WEBAPP_NAME }}-staging.azurewebsites.net
+    
+    steps:
+    - name: 📥 Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: deployment-${{ needs.build.outputs.build-version }}
+    
+    - name: 📦 Extract deployment package
+      run: |
+        mkdir -p app
+        tar -xzf deployment-${{ needs.build.outputs.build-version }}.tar.gz -C app
+    
+    - name: 🎭 Deploy to Azure Web App (Staging Slot)
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        slot-name: 'staging'
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_STAGING }}
+        package: ./app
+    
+    - name: ⏳ Wait for staging deployment
+      run: sleep 45
+    
+    - name: 🧪 Run staging validation tests
+      run: |
+        echo "🧪 Running comprehensive staging validation..."
+        
+        BASE_URL="https://${{ env.AZURE_WEBAPP_NAME }}-staging.azurewebsites.net"
+        
+        # Health checks
+        echo "Testing health endpoints..."
+        health_status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/health")
+        detailed_health=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/health/detailed")
+        
+        if [ $health_status -eq 200 ] && [ $detailed_health -eq 200 ]; then
+          echo "✅ Health checks passed"
+        else
+          echo "❌ Health checks failed (basic: $health_status, detailed: $detailed_health)"
+          exit 1
+        fi
+        
+        # API tests
+        echo "Testing API endpoints..."
+        robots_api=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/robots")
+        if [ $robots_api -eq 200 ]; then
+          echo "✅ Robots API test passed"
+        else
+          echo "❌ Robots API test failed with status $robots_api"
+          exit 1
+        fi
+        
+        # Frontend tests
+        echo "Testing frontend..."
+        frontend_status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/")
+        robots_page=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/robots")
+        
+        if [ $frontend_status -eq 200 ] && [ $robots_page -eq 200 ]; then
+          echo "✅ Frontend tests passed"
+        else
+          echo "❌ Frontend tests failed (home: $frontend_status, robots: $robots_page)"
+          exit 1
+        fi
+        
+        echo "🎉 All staging validation tests passed!"
+    
+    - name: 📊 Performance baseline test
+      run: |
+        echo "📊 Running performance baseline test..."
+        
+        # Simple load test with curl
+        echo "Testing response times..."
+        for i in {1..5}; do
+          time_total=$(curl -s -o /dev/null -w "%{time_total}" "https://${{ env.AZURE_WEBAPP_NAME }}-staging.azurewebsites.net/api/health")
+          echo "Request $i: ${time_total}s"
+        done
+        
+        echo "✅ Performance baseline completed"
+
+  #============================================================================
+  # PRODUCTION ENVIRONMENT
+  #============================================================================
+  deploy-production:
+    name: 🌐 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+    if: always() && needs.build.outputs.should-deploy-prod == 'true' && needs.deploy-staging.result == 'success'
+    environment: 
+      name: production
+      url: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net
+    
+    steps:
+    - name: 📥 Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: deployment-${{ needs.build.outputs.build-version }}
+    
+    - name: 📦 Extract deployment package
+      run: |
+        mkdir -p app
+        tar -xzf deployment-${{ needs.build.outputs.build-version }}.tar.gz -C app
+    
+    - name: 🛑 Pre-deployment backup
+      run: |
+        echo "🛑 Creating pre-deployment backup..."
+        echo "Backup timestamp: $(date)" > backup-info.txt
+        echo "Previous deployment would be backed up here"
+        # In real scenarios, you'd backup the current deployment
+    
+    - name: 🌐 Deploy to Production
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: ./app
+    
+    - name: ⏳ Wait for production deployment
+      run: sleep 60
+    
+    - name: 🧪 Production validation tests
+      run: |
+        echo "🧪 Running production validation tests..."
+        
+        BASE_URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+        
+        # Critical health check
+        echo "Running critical health checks..."
+        health_status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/health")
+        if [ $health_status -ne 200 ]; then
+          echo "❌ CRITICAL: Production health check failed with status $health_status"
+          exit 1
+        fi
+        
+        # API availability
+        api_status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/robots")
+        if [ $api_status -ne 200 ]; then
+          echo "❌ CRITICAL: Production API failed with status $api_status"
+          exit 1
+        fi
+        
+        # Frontend availability
+        frontend_status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/")
+        if [ $frontend_status -ne 200 ]; then
+          echo "❌ CRITICAL: Production frontend failed with status $frontend_status"
+          exit 1
+        fi
+        
+        echo "✅ All production validation tests passed!"
+        echo "🌐 Production deployment successful!"
+
+  #============================================================================
+  # POST-DEPLOYMENT MONITORING
+  #============================================================================
+  post-deployment:
+    name: 📊 Post-Deployment Monitoring
+    runs-on: ubuntu-latest
+    needs: [build, deploy-production]
+    if: always() && needs.deploy-production.result == 'success'
+    
+    steps:
+    - name: 📊 Extended monitoring
+      run: |
+        echo "📊 Starting extended post-deployment monitoring..."
+        
+        BASE_URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+        
+        # Monitor for 5 minutes
+        for i in {1..10}; do
+          echo "Monitor check $i/10..."
+          
+          health_status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/health")
+          response_time=$(curl -s -o /dev/null -w "%{time_total}" "$BASE_URL/api/health")
+          
+          if [ $health_status -eq 200 ]; then
+            echo "✅ Health check $i: OK (${response_time}s)"
+          else
+            echo "⚠️ Health check $i: Failed with status $health_status"
+          fi
+          
+          sleep 30
+        done
+        
+        echo "📊 Extended monitoring completed"
+    
+    - name: 🔔 Deployment notification
+      if: always()
+      run: |
+        echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Environment | Status | URL |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------------|--------|-----|" >> $GITHUB_STEP_SUMMARY
+        echo "| Development | ${{ needs.deploy-development.result == 'success' && '✅ Deployed' || '⏭️ Skipped' }} | https://${{ env.AZURE_WEBAPP_NAME }}-dev.azurewebsites.net |" >> $GITHUB_STEP_SUMMARY
+        echo "| Staging | ${{ needs.deploy-staging.result == 'success' && '✅ Deployed' || '⏭️ Skipped' }} | https://${{ env.AZURE_WEBAPP_NAME }}-staging.azurewebsites.net |" >> $GITHUB_STEP_SUMMARY
+        echo "| Production | ${{ needs.deploy-production.result == 'success' && '✅ Deployed' || '⏭️ Skipped' }} | https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📋 Deployment Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version**: ${{ needs.build.outputs.build-version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployment time**: $(date)" >> $GITHUB_STEP_SUMMARY

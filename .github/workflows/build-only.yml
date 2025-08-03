@@ -1,0 +1,347 @@
+name: Build Only - Tim Warner's Teaching Robot Fleet
+
+# This workflow performs build and test only
+# Use this with manual deployments or external release tools
+# Perfect for demonstrating CI without CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - feature/*
+    paths:
+      - 'az400-demo-app/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'az400-demo-app/**'
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run tests'
+        required: false
+        default: 'true'
+        type: boolean
+      create_artifact:
+        description: 'Create deployment artifact'
+        required: false
+        default: 'true'
+        type: boolean
+
+env:
+  NODE_VERSION: '18.x'
+  WORKING_DIRECTORY: './az400-demo-app'
+
+defaults:
+  run:
+    working-directory: ./az400-demo-app
+
+jobs:
+  #============================================================================
+  # BUILD AND TEST JOB
+  #============================================================================
+  build-and-test:
+    name: 🔨 Build and Test
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: robotfleet_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    outputs:
+      build-version: ${{ steps.version.outputs.version }}
+      artifact-name: ${{ steps.artifact.outputs.name }}
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for better analysis
+    
+    - name: 🏷️ Generate build version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          VERSION="pr-${{ github.event.number }}-$(echo ${{ github.sha }} | cut -c1-8)"
+        else
+          VERSION="$(date +'%Y%m%d')-$(echo ${{ github.sha }} | cut -c1-8)"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Generated version: $VERSION"
+    
+    - name: 📦 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: az400-demo-app/package-lock.json
+    
+    - name: 📋 Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.npm
+          az400-demo-app/node_modules
+        key: ${{ runner.os }}-node-${{ hashFiles('az400-demo-app/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-
+    
+    - name: 🔧 Install dependencies
+      run: |
+        echo "Installing dependencies..."
+        npm ci
+        echo "Dependencies installed successfully"
+    
+    - name: 🔍 Run ESLint
+      run: |
+        echo "Running ESLint..."
+        npm run lint
+        echo "ESLint completed successfully"
+    
+    - name: 🔎 Run TypeScript check
+      run: |
+        echo "Running TypeScript check..."
+        npm run typecheck
+        echo "TypeScript check completed successfully"
+    
+    - name: 🧪 Run tests
+      if: ${{ github.event.inputs.run_tests != 'false' }}
+      run: |
+        echo "Running test suite..."
+        npm test -- --ci --coverage --watchAll=false --verbose
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: robotfleet_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+    
+    - name: 📊 Upload test results
+      if: always() && github.event.inputs.run_tests != 'false'
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ steps.version.outputs.version }}
+        path: |
+          az400-demo-app/test-results.xml
+          az400-demo-app/coverage/
+        retention-days: 30
+    
+    - name: 📈 Publish test results
+      if: always() && github.event.inputs.run_tests != 'false'
+      uses: dorny/test-reporter@v1
+      with:
+        name: Jest Tests
+        path: az400-demo-app/test-results.xml
+        reporter: jest-junit
+    
+    - name: 🏗️ Run build
+      run: |
+        echo "Running build process..."
+        npm run build
+        echo "Build completed successfully"
+    
+    - name: 📄 Generate build report
+      run: |
+        echo "=== BUILD REPORT ===" > build-report.txt
+        echo "Build Version: ${{ steps.version.outputs.version }}" >> build-report.txt
+        echo "Node Version: $(node --version)" >> build-report.txt
+        echo "NPM Version: $(npm --version)" >> build-report.txt
+        echo "Build Date: $(date)" >> build-report.txt
+        echo "Git Commit: ${{ github.sha }}" >> build-report.txt
+        echo "Git Branch: ${{ github.ref_name }}" >> build-report.txt
+        echo "Triggered by: ${{ github.event_name }}" >> build-report.txt
+        echo "" >> build-report.txt
+        echo "=== PACKAGE INFO ===" >> build-report.txt
+        npm list --production --depth=0 >> build-report.txt 2>/dev/null || true
+        echo "" >> build-report.txt
+        echo "=== BUILD ARTIFACTS ===" >> build-report.txt
+        find . -name "*.js" -not -path "./node_modules/*" -not -path "./coverage/*" | head -20 >> build-report.txt
+        
+        cat build-report.txt
+    
+    - name: 🧹 Clean up for production
+      if: ${{ github.event.inputs.create_artifact != 'false' }}
+      run: |
+        echo "Cleaning up development files..."
+        
+        # Remove development dependencies and files
+        rm -rf node_modules
+        rm -rf coverage
+        rm -rf src/**/*.test.js
+        rm -rf src/**/__tests__
+        rm -f .env.test
+        rm -f test-results.xml
+        rm -f *.log
+        
+        # Install only production dependencies
+        npm ci --only=production
+        
+        echo "Production cleanup completed"
+    
+    - name: 📦 Create deployment artifact
+      if: ${{ github.event.inputs.create_artifact != 'false' }}
+      id: artifact
+      run: |
+        ARTIFACT_NAME="robot-fleet-${{ steps.version.outputs.version }}"
+        echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+        
+        echo "Creating deployment artifact: $ARTIFACT_NAME"
+        
+        # Create artifact directory
+        mkdir -p ../artifacts
+        
+        # Create tarball
+        tar -czf "../artifacts/${ARTIFACT_NAME}.tar.gz" \
+          --exclude=node_modules/.cache \
+          --exclude='*.log' \
+          --exclude='.git*' \
+          .
+        
+        # Create zip file
+        cd ..
+        zip -r "artifacts/${ARTIFACT_NAME}.zip" az400-demo-app/ \
+          -x "az400-demo-app/node_modules/.cache/*" \
+          -x "az400-demo-app/*.log" \
+          -x "az400-demo-app/.git*"
+        
+        cd az400-demo-app
+        echo "Artifact created successfully"
+        
+        # Show artifact info
+        ls -la ../artifacts/
+    
+    - name: 📤 Upload deployment artifact
+      if: ${{ github.event.inputs.create_artifact != 'false' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.artifact.outputs.name }}
+        path: |
+          artifacts/${{ steps.artifact.outputs.name }}.tar.gz
+          artifacts/${{ steps.artifact.outputs.name }}.zip
+          az400-demo-app/build-report.txt
+        retention-days: 90
+    
+    - name: 📤 Upload infrastructure templates
+      if: ${{ github.event.inputs.create_artifact != 'false' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: infrastructure-templates-${{ steps.version.outputs.version }}
+        path: |
+          az400-demo-app/.azure/
+        retention-days: 90
+
+  #============================================================================
+  # CODE QUALITY JOB
+  #============================================================================
+  code-quality:
+    name: 🔍 Code Quality Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: 📦 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: az400-demo-app/package-lock.json
+    
+    - name: 🔧 Install dependencies
+      run: npm ci
+    
+    - name: 🔍 Run ESLint with reporting
+      run: |
+        npm run lint -- --format=@microsoft/eslint-formatter-sarif --output-file eslint-results.sarif
+      continue-on-error: true
+    
+    - name: 📊 Upload SARIF file
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: az400-demo-app/eslint-results.sarif
+        category: eslint
+      continue-on-error: true
+
+  #============================================================================
+  # SECURITY SCAN JOB
+  #============================================================================
+  security-scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 📦 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: az400-demo-app/package-lock.json
+    
+    - name: 🔧 Install dependencies
+      run: npm ci
+    
+    - name: 🔍 Run npm audit
+      run: |
+        echo "Running npm security audit..."
+        npm audit --audit-level=moderate
+      continue-on-error: true
+    
+    - name: 🔐 Run Snyk security scan
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high
+        command: test
+      continue-on-error: true
+
+  #============================================================================
+  # BUILD SUMMARY JOB
+  #============================================================================
+  build-summary:
+    name: 📋 Build Summary
+    runs-on: ubuntu-latest
+    needs: [build-and-test, code-quality, security-scan]
+    if: always()
+    
+    steps:
+    - name: 📊 Generate build summary
+      run: |
+        echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Component | Status | Details |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Build & Test | ${{ needs.build-and-test.result == 'success' && '✅ Success' || '❌ Failed' }} | Version: ${{ needs.build-and-test.outputs.build-version || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Code Quality | ${{ needs.code-quality.result == 'success' && '✅ Success' || needs.code-quality.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} | ESLint analysis |" >> $GITHUB_STEP_SUMMARY
+        echo "| Security Scan | ${{ needs.security-scan.result == 'success' && '✅ Success' || '⚠️ Check required' }} | npm audit + Snyk |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- **Application Package**: ${{ needs.build-and-test.outputs.artifact-name || 'Not created' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Infrastructure Templates**: Available for deployment" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔧 Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "- Download artifacts for manual deployment" >> $GITHUB_STEP_SUMMARY
+        echo "- Use with Azure DevOps Release Pipelines" >> $GITHUB_STEP_SUMMARY
+        echo "- Deploy to Azure App Service manually" >> $GITHUB_STEP_SUMMARY
