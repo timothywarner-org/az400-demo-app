@@ -44,6 +44,9 @@ jobs:
   # BUILD AND TEST JOB
   #============================================================================
   build-and-test:
+    permissions:
+      contents: read
+      checks: write
     name: 🔨 Build and Test
     runs-on: ubuntu-latest
     
@@ -248,6 +251,9 @@ jobs:
   # CODE QUALITY JOB
   #============================================================================
   code-quality:
+    permissions:
+      contents: read
+      security-events: write
     name: 🔍 Code Quality Analysis
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
